@@ -1,0 +1,4 @@
+interface:
+  display_name: "Linear Manager"
+  short_description: "HTTP-only Linear manager (no Linear MCP) for tickets, status, and comments"
+  default_prompt: "Use this skill only via HTTP GraphQL with python3 scripts/linear_manager.py. Create/read Linear tickets and sub-tickets, update issue status/fields, and read/create comments. Never use mcp__linear__* tools. Write commands (create/update/comment) are dry-run by default and require --execute for real mutation. If token is missing or request fails, return error with short suggestions and do not fallback to MCP."
