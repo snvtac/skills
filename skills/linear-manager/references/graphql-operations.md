@@ -175,6 +175,11 @@ mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
       title
       url
       updatedAt
+      team {
+        id
+        key
+        name
+      }
       state {
         id
         name
@@ -189,6 +194,7 @@ Input fields used:
 - `title` (optional)
 - `description` (optional)
 - `priority` (optional)
+- `teamId` (optional; used to move an issue to another team)
 - `assigneeId` (optional)
 - `stateId` (optional; resolved from `--state` by querying team states)
 - `cycleId` (optional; direct id or resolved from `--cycle-name`/`--cycle-number`)
@@ -196,7 +202,37 @@ Input fields used:
 - `addedLabelIds` (optional; add labels incrementally)
 - `removedLabelIds` (optional; remove labels incrementally)
 
-### 6) List team states
+CLI behavior:
+- `update --team-key|--team-id` resolves destination team and sends `teamId`.
+- Cross-team moves are rejected when combined with `state`, `cycle`, or label mutation selectors in the same command.
+
+### 6) Delete issue
+```graphql
+mutation DeleteIssue($id: String!) {
+  issueDelete(id: $id) {
+    success
+    issue: entity {
+      id
+      identifier
+      title
+      url
+      team {
+        id
+        key
+        name
+      }
+    }
+  }
+}
+```
+
+CLI behavior:
+- `delete` accepts either UUID or `TEAM-123` and resolves the issue before dry-run or execute.
+- Real delete requires both `--execute` and `--confirm-delete <RESOLVED_IDENTIFIER>`.
+- The confirmation requirement is enforced in the CLI before the GraphQL mutation is sent.
+- Linear's payload type is `IssueArchivePayload`; the CLI aliases `entity` to `issue` to keep response shape consistent with other commands.
+
+### 7) List team states
 ```graphql
 query TeamStates($id: String!) {
   team(id: $id) {
@@ -214,7 +250,7 @@ query TeamStates($id: String!) {
 }
 ```
 
-### 7) List child issues
+### 8) List child issues
 ```graphql
 query GetIssueChildren($id: String!, $first: Int!) {
   issue(id: $id) {
@@ -241,7 +277,7 @@ query GetIssueChildren($id: String!, $first: Int!) {
 }
 ```
 
-### 8) List comments
+### 9) List comments
 ```graphql
 query GetIssueComments($id: String!, $first: Int!) {
   issue(id: $id) {
@@ -265,7 +301,7 @@ query GetIssueComments($id: String!, $first: Int!) {
 }
 ```
 
-### 9) Create comment
+### 10) Create comment
 ```graphql
 mutation CreateComment($input: CommentCreateInput!) {
   commentCreate(input: $input) {
@@ -291,4 +327,4 @@ Input fields used:
 - API returns `errors`: raise command failure with GraphQL payload.
 - HTTP/network failure: return clear CLI error message.
 - Not found issues/teams/states: return explicit object-specific error.
-- Write operations (`create`, `update`, `comment`) support `--dry-run` to inspect payload before mutation.
+- Write operations (`create`, `update`, `delete`, `comment`) support `--dry-run` to inspect payload before mutation.

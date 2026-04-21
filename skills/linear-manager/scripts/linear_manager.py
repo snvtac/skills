@@ -117,6 +117,16 @@ def parse_issue_identifier(issue_identifier: str) -> Tuple[str, int]:
     return match.group("team").upper(), int(match.group("number"))
 
 
+def issue_summary(issue: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": issue.get("id"),
+        "identifier": issue.get("identifier"),
+        "title": issue.get("title"),
+        "url": issue.get("url"),
+        "team": issue.get("team"),
+    }
+
+
 def resolve_issue_ref(token: str, issue_id_or_identifier: str) -> Dict[str, Any]:
     issue_ref = issue_id_or_identifier.strip()
     if not issue_ref:
@@ -169,9 +179,23 @@ def resolve_issue_ref(token: str, issue_id_or_identifier: str) -> Dict[str, Any]
     return nodes[0]
 
 
-def resolve_team_id(token: str, team_id: Optional[str], team_key: Optional[str]) -> str:
+def resolve_team_ref(token: str, team_id: Optional[str], team_key: Optional[str]) -> Dict[str, Any]:
     if team_id:
-        return team_id.strip()
+        query = """
+        query ResolveTeamById($id: String!) {
+          team(id: $id) {
+            id
+            key
+            name
+          }
+        }
+        """
+        data = post_graphql(token, query, {"id": team_id.strip()})
+        team = data.get("team")
+        if not team:
+            raise LinearAPIError(f"Team not found by id: {team_id}")
+        return team
+
     if not team_key:
         raise LinearAPIError("Either --team-id or --team-key is required.")
 
@@ -190,7 +214,11 @@ def resolve_team_id(token: str, team_id: Optional[str], team_key: Optional[str])
     nodes = ((data.get("teams") or {}).get("nodes")) or []
     if not nodes:
         raise LinearAPIError(f"Team not found by key: {team_key}")
-    return nodes[0]["id"]
+    return nodes[0]
+
+
+def resolve_team_id(token: str, team_id: Optional[str], team_key: Optional[str]) -> str:
+    return str(resolve_team_ref(token, team_id, team_key)["id"]).strip()
 
 
 def get_issue_team_id(token: str, issue_id: str) -> str:
@@ -373,6 +401,24 @@ def load_text_from_args(value: Optional[str], value_file: Optional[str], use_std
     if use_stdin:
         return sys.stdin.read()
     raise LinearAPIError(f"Missing {kind}. Use --{kind}, --{kind}-file, or --{kind}-stdin.")
+
+
+def has_team_scoped_update_args(args: argparse.Namespace) -> bool:
+    return any(
+        (
+            args.state is not None,
+            args.state_id is not None,
+            args.cycle_id is not None,
+            args.cycle_name is not None,
+            args.cycle_number is not None,
+            args.set_label_ids is not None,
+            args.set_labels is not None,
+            args.add_label_ids is not None,
+            args.add_labels is not None,
+            args.remove_label_ids is not None,
+            args.remove_labels is not None,
+        )
+    )
 
 
 def cmd_list_issues(token: str, args: argparse.Namespace) -> Dict[str, Any]:
@@ -618,6 +664,23 @@ def cmd_update_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
     issue = resolve_issue_ref(token, args.id)
     issue_input: Dict[str, Any] = {}
     issue_team_id: Optional[str] = None
+    current_team = issue.get("team") or {}
+    current_team_id = str(current_team.get("id") or "").strip()
+    target_team: Optional[Dict[str, Any]] = None
+    target_team_id = ""
+
+    if args.team_id or args.team_key:
+        target_team = resolve_team_ref(token, args.team_id, args.team_key)
+        target_team_id = str(target_team.get("id") or "").strip()
+        if not target_team_id:
+            raise LinearAPIError("Resolved target team is missing an id.")
+        if current_team_id and target_team_id != current_team_id and has_team_scoped_update_args(args):
+            raise LinearAPIError(
+                "Cannot combine a team move with state, cycle, or label updates. "
+                "Move the ticket first, then update destination-team state/cycle/labels in a separate command."
+            )
+        if target_team_id != current_team_id:
+            issue_input["teamId"] = target_team_id
 
     if args.title is not None:
         issue_input["title"] = args.title
@@ -704,7 +767,15 @@ def cmd_update_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
 
     should_execute = bool(getattr(args, "execute", False))
     if not should_execute:
-        return {"dryRun": True, "execute": False, "issueId": issue["id"], "input": issue_input}
+        result: Dict[str, Any] = {
+            "dryRun": True,
+            "execute": False,
+            "issue": issue_summary(issue),
+            "input": issue_input,
+        }
+        if target_team:
+            result["targetTeam"] = target_team
+        return result
 
     query = """
     mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
@@ -716,6 +787,11 @@ def cmd_update_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
           title
           url
           updatedAt
+          team {
+            id
+            key
+            name
+          }
           state {
             id
             name
@@ -729,6 +805,57 @@ def cmd_update_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
     result = data.get("issueUpdate") or {}
     if not result.get("success"):
         raise LinearAPIError(f"issueUpdate failed: {json.dumps(result, ensure_ascii=False)}")
+    return data
+
+
+def cmd_delete_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
+    issue = resolve_issue_ref(token, args.id)
+    expected_confirmation = str(issue.get("identifier") or "").strip()
+    if not expected_confirmation:
+        raise LinearAPIError("Resolved issue is missing an identifier required for delete confirmation.")
+
+    should_execute = bool(getattr(args, "execute", False))
+    if not should_execute:
+        return {
+            "dryRun": True,
+            "execute": False,
+            "issue": issue_summary(issue),
+            "expectedConfirmation": expected_confirmation,
+        }
+
+    provided_confirmation = (args.confirm_delete or "").strip()
+    if not provided_confirmation:
+        raise LinearAPIError(
+            "Delete requires explicit user-confirmed consent. Re-run with "
+            f"--confirm-delete {expected_confirmation} and --execute."
+        )
+    if provided_confirmation != expected_confirmation:
+        raise LinearAPIError(
+            f"Delete confirmation mismatch. Expected --confirm-delete {expected_confirmation}."
+        )
+
+    query = """
+    mutation DeleteIssue($id: String!) {
+      issueDelete(id: $id) {
+        success
+        issue: entity {
+          id
+          identifier
+          title
+          url
+          team {
+            id
+            key
+            name
+          }
+        }
+      }
+    }
+    """
+    data = post_graphql(token, query, {"id": issue["id"]})
+    result = data.get("issueDelete") or {}
+    if not result.get("success"):
+        raise LinearAPIError(f"issueDelete failed: {json.dumps(result, ensure_ascii=False)}")
     return data
 
 
@@ -812,7 +939,7 @@ def cmd_create_comment(token: str, args: argparse.Namespace) -> Dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read/create/update/comment Linear issues via Linear GraphQL API.",
+        description="Read/create/update/delete/comment Linear issues via Linear GraphQL API.",
     )
     parser.add_argument(
         "--token-env",
@@ -881,6 +1008,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     update_parser = subparsers.add_parser("update", help="Update issue fields and workflow state.")
     update_parser.add_argument("--id", required=True, help="Issue UUID or identifier.")
+    update_team_group = update_parser.add_mutually_exclusive_group()
+    update_team_group.add_argument("--team-id", help="Destination team id (UUID).")
+    update_team_group.add_argument("--team-key", help="Destination team key (e.g. ENG).")
     update_parser.add_argument("--title", help="New issue title.")
     update_parser.add_argument("--description", help="New issue description in markdown.")
     update_parser.add_argument("--description-file", help="Path to description markdown file.")
@@ -933,6 +1063,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute",
         action="store_true",
         help="Apply write to Linear. Without this flag, update runs in dry-run mode.",
+    )
+
+    delete_parser = subparsers.add_parser("delete", help="Delete an issue with explicit confirmation.")
+    delete_parser.add_argument("--id", required=True, help="Issue UUID or identifier.")
+    delete_parser.add_argument(
+        "--confirm-delete",
+        help="Required with --execute. Must exactly match the resolved issue identifier.",
+    )
+    delete_mode = delete_parser.add_mutually_exclusive_group()
+    delete_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview target issue and required confirmation only (default behavior).",
+    )
+    delete_mode.add_argument(
+        "--execute",
+        action="store_true",
+        help="Apply delete to Linear. Requires --confirm-delete <IDENTIFIER>.",
     )
 
     states_parser = subparsers.add_parser("states", help="List workflow states for a team.")
@@ -1000,6 +1148,8 @@ def main() -> int:
             result = cmd_create_issue(token, args)
         elif args.command == "update":
             result = cmd_update_issue(token, args)
+        elif args.command == "delete":
+            result = cmd_delete_issue(token, args)
         elif args.command == "states":
             result = cmd_list_states(token, args)
         elif args.command == "children":

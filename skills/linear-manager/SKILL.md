@@ -1,6 +1,6 @@
 ---
 name: linear-manager
-description: Manage Linear tickets/comments via direct HTTP GraphQL with `python3 scripts/linear_manager.py` and token env vars only (no Linear MCP). Supports create/read/update tickets and sub-tickets, workflow status changes, cycle/label updates, and comment read/create/thread reply.
+description: Manage Linear tickets/comments via direct HTTP GraphQL with `python3 scripts/linear_manager.py` and token env vars only (no Linear MCP). Supports create/read/update/delete tickets and sub-tickets, workflow status changes, team reassignment, cycle/label updates, and comment read/create/thread reply.
 ---
 
 # Linear Manager
@@ -13,9 +13,11 @@ Execution entrypoint is `python3 scripts/linear_manager.py`.
 - Read:
 `list`, `get`, `states`, `children`, `comments`
 - Write:
-`create`, `update`, `comment`
+`create`, `update`, `delete`, `comment`
 - Sub-ticket:
 `create --parent <ISSUE_REF>`
+- Team management:
+`update --team-key <KEY>` or `update --team-id <UUID>`
 - Status management:
 `update --state <name>` or `update --state-id <uuid>`
 - Cycle/label management:
@@ -48,8 +50,12 @@ python3 scripts/linear_manager.py --token-env <ENV_NAME> ...
 ```
 
 ## Write Safety Policy (Default Dry-Run)
-`create`, `update`, `comment` are dry-run by default.
+`create`, `update`, `delete`, `comment` are dry-run by default.
 To perform real write, caller must pass `--execute`.
+
+Delete has an extra safety requirement:
+1. Run dry-run first to inspect the resolved target and expected confirmation value.
+2. Re-run with both `--execute` and `--confirm-delete <IDENTIFIER>` after the user explicitly agrees.
 
 Recommended two-step workflow:
 1. Run dry-run first and inspect payload.
@@ -117,6 +123,19 @@ python3 scripts/linear_manager.py --pretty update \
 ```
 
 ```bash
+python3 scripts/linear_manager.py --pretty update \
+  --id ENG-123 \
+  --team-key DEVOPS
+```
+
+```bash
+python3 scripts/linear_manager.py --pretty update \
+  --id ENG-123 \
+  --team-key DEVOPS \
+  --execute
+```
+
+```bash
 python3 scripts/linear_manager.py --pretty states --team-key ENG
 ```
 
@@ -149,6 +168,17 @@ python3 scripts/linear_manager.py --pretty comment \
   --execute
 ```
 
+```bash
+python3 scripts/linear_manager.py --pretty delete --id ENG-123
+```
+
+```bash
+python3 scripts/linear_manager.py --pretty delete \
+  --id ENG-123 \
+  --confirm-delete ENG-123 \
+  --execute
+```
+
 ## Output And Exit Codes
 - Exit code `0`:
 success
@@ -160,6 +190,9 @@ missing token env var
 ## Operational Notes
 - Prefer `--pretty` for readable JSON.
 - `--id` and `--parent` accept both UUID and identifier (`TEAM-123`).
+- `delete --execute` requires `--confirm-delete` to exactly match the resolved issue identifier.
+- `update --team-key|--team-id` moves an issue to another team.
+- Do not combine a cross-team move with `--state`, `--cycle-*`, or label mutation flags; move first, then apply destination-team workflow fields in a second command.
 - For large markdown, use `--description-file` or `--body-file`.
 - Use `--body-stdin` for piping comment content.
 

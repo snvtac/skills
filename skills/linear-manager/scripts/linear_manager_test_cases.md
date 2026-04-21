@@ -12,6 +12,7 @@ Run once in shell:
 source ~/.zshrc
 export CLI="python3 skills/linear-manager/scripts/linear_manager.py --pretty"
 export TEAM_KEY="CF"
+export DEST_TEAM_KEY="DEVOPS"
 export TS="$(date +%Y%m%d-%H%M%S)"
 ```
 
@@ -34,9 +35,9 @@ $CLI --help
 ```
 
 Expected:
-- Includes commands: `list get create update states children comments comment`.
+- Includes commands: `list get create update delete states children comments comment`.
 
-### TC-002 Update Help Includes Cycle/Label Options
+### TC-002 Update Help Includes Team/Cycle/Label Options
 Command:
 
 ```bash
@@ -44,10 +45,22 @@ $CLI update --help
 ```
 
 Expected:
+- Contains `--team-id --team-key`.
 - Contains `--cycle-id --cycle-name --cycle-number`.
 - Contains `--set-labels --add-labels --remove-labels`.
 
-### TC-003 HTTP-Only Policy Check
+### TC-003 Delete Help Entry
+Command:
+
+```bash
+$CLI delete --help
+```
+
+Expected:
+- Contains `--confirm-delete`.
+- Describes explicit confirmation before execution.
+
+### TC-004 HTTP-Only Policy Check
 Command:
 
 ```bash
@@ -58,7 +71,7 @@ Expected:
 - No match in executable script (exit code `1`), proving runtime path is HTTP-only.
 - (Optional) Running `rg -n "mcp__linear__" skills/linear-manager` may still show policy docs/prompts.
 
-### TC-004 Missing Token Behavior
+### TC-005 Missing Token Behavior
 Command:
 
 ```bash
@@ -354,9 +367,105 @@ Expected:
 - Updated `title`, `description`, `state`, `cycle`, `labels` present.
 - Comments list present with test comments.
 
-## 9) Negative And Conflict Cases
+## 9) Team Move And Delete
 
-### TC-801 Invalid Identifier
+### TC-801 Team Move Dry-Run
+Command:
+
+```bash
+$CLI update --id "$CHILD_IDENTIFIER" --team-key "$DEST_TEAM_KEY" --dry-run
+```
+
+Expected:
+- `dryRun=true`.
+- `input.teamId` exists.
+- `targetTeam.key == $DEST_TEAM_KEY`.
+
+### TC-802 Team Move Conflict With State
+Command:
+
+```bash
+$CLI update --id "$CHILD_IDENTIFIER" --team-key "$DEST_TEAM_KEY" --state "Todo" --dry-run
+echo $?
+```
+
+Expected:
+- Error explains that team move cannot be combined with state/cycle/label updates.
+- Exit code `1`.
+
+### TC-803 Team Move Real
+Command:
+
+```bash
+$CLI update --id "$CHILD_IDENTIFIER" --team-key "$DEST_TEAM_KEY" --execute
+```
+
+Expected:
+- `issueUpdate.success=true`.
+- Save `MOVED_CHILD_IDENTIFIER` from `issueUpdate.issue.identifier`.
+- `issueUpdate.issue.team.key == $DEST_TEAM_KEY`.
+
+### TC-804 Read Moved Child By New Identifier
+Command:
+
+```bash
+$CLI get --id "$MOVED_CHILD_IDENTIFIER" --comments-limit 3
+```
+
+Expected:
+- Request succeeds with the post-move identifier.
+- Returned `issue.team.key == $DEST_TEAM_KEY`.
+
+### TC-805 Delete Dry-Run
+Command:
+
+```bash
+$CLI delete --id "$MOVED_CHILD_IDENTIFIER" --dry-run
+```
+
+Expected:
+- `dryRun=true`.
+- Response includes `issue.identifier == $MOVED_CHILD_IDENTIFIER`.
+- Response includes `expectedConfirmation == $MOVED_CHILD_IDENTIFIER`.
+
+### TC-806 Delete Rejected Without Confirmation
+Command:
+
+```bash
+$CLI delete --id "$MOVED_CHILD_IDENTIFIER" --execute
+echo $?
+```
+
+Expected:
+- Error explains that explicit confirmation is required.
+- Exit code `1`.
+
+### TC-807 Delete Rejected With Mismatched Confirmation
+Command:
+
+```bash
+$CLI delete --id "$MOVED_CHILD_IDENTIFIER" --confirm-delete BAD-999 --execute
+echo $?
+```
+
+Expected:
+- Error explains confirmation mismatch and shows the expected identifier.
+- Exit code `1`.
+
+### TC-808 Delete Real
+Command:
+
+```bash
+$CLI delete --id "$MOVED_CHILD_IDENTIFIER" --confirm-delete "$MOVED_CHILD_IDENTIFIER" --execute
+```
+
+Expected:
+- `issueDelete.success=true`.
+- Returned deleted issue identifier matches `$MOVED_CHILD_IDENTIFIER`.
+
+## 10) Negative And Conflict Cases
+
+### TC-901 Invalid Identifier
 Command:
 
 ```bash
@@ -368,7 +477,7 @@ Expected:
 - Error message for invalid identifier format.
 - Exit code `1`.
 
-### TC-802 Invalid Priority
+### TC-902 Invalid Priority
 Command:
 
 ```bash
@@ -380,7 +489,7 @@ Expected:
 - Validation error for priority enum.
 - Exit code `1`.
 
-### TC-803 Cycle Selector Conflict
+### TC-903 Cycle Selector Conflict
 Command:
 
 ```bash
@@ -392,7 +501,7 @@ Expected:
 - Error: only one cycle selector allowed.
 - Exit code `1`.
 
-### TC-804 Label Set/Add Conflict
+### TC-904 Label Set/Add Conflict
 Command:
 
 ```bash
@@ -404,7 +513,7 @@ Expected:
 - Error: cannot mix set-labels with add/remove.
 - Exit code `1`.
 
-### TC-805 Unknown Label Name
+### TC-905 Unknown Label Name
 Command:
 
 ```bash
@@ -416,7 +525,7 @@ Expected:
 - Error includes unknown label name.
 - Exit code `1`.
 
-### TC-806 Unknown Cycle Name
+### TC-906 Unknown Cycle Name
 Command:
 
 ```bash
@@ -428,7 +537,7 @@ Expected:
 - Error includes unknown cycle name.
 - Exit code `1`.
 
-### TC-807 UUID Path For Get
+### TC-907 UUID Path For Get
 Command:
 
 ```bash
@@ -439,7 +548,7 @@ Expected:
 - Succeeds using UUID input path.
 - Returned `issue.identifier == $PARENT_IDENTIFIER`.
 
-### TC-808 Update State By state-id
+### TC-908 Update State By state-id
 Command:
 
 ```bash
@@ -450,7 +559,7 @@ Expected:
 - `issueUpdate.success=true`.
 - No state-name resolution required.
 
-### TC-809 Update Cycle By cycle-number
+### TC-909 Update Cycle By cycle-number
 Command:
 
 ```bash
@@ -461,7 +570,7 @@ Expected:
 - `issueUpdate.success=true`.
 - Follow-up `get` shows cycle number/name match.
 
-### TC-810 Update Label By label-id
+### TC-910 Update Label By label-id
 Command:
 
 ```bash
@@ -472,7 +581,7 @@ Expected:
 - `issueUpdate.success=true`.
 - Follow-up `get` labels include `<LABEL_ID>`.
 
-### TC-811 Comment Via body-file
+### TC-911 Comment Via body-file
 Command:
 
 ```bash
@@ -486,7 +595,7 @@ Expected:
 - `commentCreate.success=true`.
 - Returned comment body matches file content.
 
-### TC-812 Comment Via body-stdin
+### TC-912 Comment Via body-stdin
 Command:
 
 ```bash
@@ -497,7 +606,7 @@ Expected:
 - `commentCreate.success=true`.
 - Returned comment body matches stdin content.
 
-### TC-813 Missing description-file Error
+### TC-913 Missing description-file Error
 Command:
 
 ```bash
@@ -509,8 +618,9 @@ Expected:
 - Error mentions file not found.
 - Exit code `1`.
 
-## 10) Optional Cleanup
+## 11) Optional Cleanup
 
 If you want cleanup after review:
 - Move test issues to a terminal state (for example `Canceled`) with `update --state`.
-- Or manually archive in Linear UI.
+- Restore or review deleted test issues in Linear archives if needed.
+- Or manually archive remaining test issues in Linear UI.
