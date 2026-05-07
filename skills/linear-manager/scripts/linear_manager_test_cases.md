@@ -35,7 +35,7 @@ $CLI --help
 ```
 
 Expected:
-- Includes commands: `list get create update delete states children comments comment`.
+- Includes commands: `list templates get create update delete states children comments comment`.
 
 ### TC-002 Update Help Includes Team/Cycle/Label Options
 Command:
@@ -618,7 +618,144 @@ Expected:
 - Error mentions file not found.
 - Exit code `1`.
 
-## 11) Optional Cleanup
+## 12) Templates
+
+### TC-1001 Templates Help Entry
+Command:
+
+```bash
+$CLI templates --help
+```
+
+Expected:
+- Contains `--team-id`, `--team-key`, `--type`, `--name`, and `--include-archived`.
+
+### TC-1002 List COR Templates
+Command:
+
+```bash
+$CLI templates --team-key COR
+```
+
+Expected:
+- Returns `templates`.
+- Contains `COR / Issue Templates 2025`.
+- Contains workspace-level templates where `team == null`.
+
+### TC-1003 Create With Default Template (Dry-Run)
+Command:
+
+```bash
+$CLI create --team-key "$TEAM_KEY" --title "[tc] default template ${TS}" --use-default-template --dry-run
+```
+
+Expected:
+- `dryRun=true`.
+- `input.useDefaultTemplate=true`.
+- This only validates that the input field is set; real execution requires the target team to have a default template configured in Linear.
+
+### TC-1004 Create With Template Name (Dry-Run)
+Command:
+
+```bash
+$CLI create --team-key "$TEAM_KEY" --title "[tc] template name ${TS}" --template-name "Issue Templates 2025" --dry-run
+```
+
+Expected:
+- `dryRun=true`.
+- `input.templateId` exists.
+- `resolvedTemplate.name == "Issue Templates 2025"`.
+
+### TC-1005 Create With Template ID (Dry-Run)
+Command:
+
+```bash
+VALID_TEMPLATE_ID="<VALID_ISSUE_TEMPLATE_ID_FOR_TEAM_KEY>"
+$CLI create --team-key "$TEAM_KEY" --title "[tc] template id ${TS}" --template-id "$VALID_TEMPLATE_ID" --dry-run
+```
+
+Expected:
+- `dryRun=true`.
+- `input.templateId == $VALID_TEMPLATE_ID`.
+- `resolvedTemplate.type == "issue"`.
+
+### TC-1006 Missing Template ID
+Command:
+
+```bash
+$CLI create --team-key "$TEAM_KEY" --title "[tc] missing template ${TS}" --template-id 11111111-1111-1111-1111-111111111111 --dry-run
+echo $?
+```
+
+Expected:
+- Error explains that the template was not found.
+- Exit code `1`.
+
+### TC-1007 Non-Issue Template Rejected
+Command:
+
+```bash
+PROJECT_TEMPLATE_ID="<PROJECT_TEMPLATE_ID_FROM_templates_--type_project>"
+$CLI create --team-key "$TEAM_KEY" --title "[tc] project template ${TS}" --template-id "$PROJECT_TEMPLATE_ID" --dry-run
+echo $?
+```
+
+Expected:
+- Error explains that create only supports issue templates.
+- Exit code `1`.
+
+### TC-1008 Other-Team Template Rejected
+Command:
+
+```bash
+OTHER_TEAM_TEMPLATE_ID="<ISSUE_TEMPLATE_ID_SCOPED_TO_NON_TEAM_KEY_TEAM>"
+$CLI create --team-key "$TEAM_KEY" --title "[tc] other team template ${TS}" --template-id "$OTHER_TEAM_TEMPLATE_ID" --dry-run
+echo $?
+```
+
+Expected:
+- Error explains that the template is scoped to another team.
+- Exit code `1`.
+
+### TC-1009 Ambiguous Template Name
+Command:
+
+```bash
+AMBIGUOUS_TEMPLATE_NAME="<NAME_SHARED_BY_TEAM_AND_WORKSPACE_TEMPLATES>"
+$CLI create --team-key "$TEAM_KEY" --title "[tc] ambiguous template ${TS}" --template-name "$AMBIGUOUS_TEMPLATE_NAME" --dry-run
+echo $?
+```
+
+Expected:
+- Error explains that the template name matched multiple candidates.
+- Error lists candidate `id/team/name` details.
+- Exit code `1`.
+
+### TC-1010 Template Selector Conflict
+Command:
+
+```bash
+$CLI create --team-key "$TEAM_KEY" --title "[tc] selector conflict ${TS}" --template-id "$VALID_TEMPLATE_ID" --use-default-template --dry-run
+echo $?
+```
+
+Expected:
+- `argparse` rejects the mutually exclusive template selectors.
+- Exit code `2`.
+
+### TC-1011 Create Sub-Issue With Template (Dry-Run)
+Command:
+
+```bash
+$CLI create --team-key "$TEAM_KEY" --title "[tc] sub template ${TS}" --template-id "$VALID_TEMPLATE_ID" --parent "$PARENT_IDENTIFIER" --dry-run
+```
+
+Expected:
+- `dryRun=true`.
+- `input.templateId == $VALID_TEMPLATE_ID`.
+- `input.parentId` exists.
+
+## 13) Optional Cleanup
 
 If you want cleanup after review:
 - Move test issues to a terminal state (for example `Canceled`) with `update --state`.

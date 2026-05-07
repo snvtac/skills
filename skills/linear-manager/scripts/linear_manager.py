@@ -11,6 +11,7 @@ from urllib import error, request
 
 LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
 DEFAULT_TOKEN_ENV = "LINEAR_API_TOKEN"
+DESCRIPTION_PREVIEW_LIMIT = 80
 
 ISSUE_IDENTIFIER_RE = re.compile(r"^(?P<team>[A-Za-z][A-Za-z0-9]+)-(?P<number>\d+)$")
 UUID_RE = re.compile(
@@ -127,6 +128,21 @@ def issue_summary(issue: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def team_label(team: Optional[Dict[str, Any]]) -> str:
+    if not team:
+        return "workspace"
+    return str(team.get("key") or team.get("name") or team.get("id") or "unknown").strip()
+
+
+def truncate_preview(value: Optional[str], limit: int = DESCRIPTION_PREVIEW_LIMIT) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = " ".join(str(value).split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3] + "..."
+
+
 def resolve_issue_ref(token: str, issue_id_or_identifier: str) -> Dict[str, Any]:
     issue_ref = issue_id_or_identifier.strip()
     if not issue_ref:
@@ -219,6 +235,151 @@ def resolve_team_ref(token: str, team_id: Optional[str], team_key: Optional[str]
 
 def resolve_team_id(token: str, team_id: Optional[str], team_key: Optional[str]) -> str:
     return str(resolve_team_ref(token, team_id, team_key)["id"]).strip()
+
+
+def list_workspace_templates(token: str) -> List[Dict[str, Any]]:
+    query = """
+    query ListTemplates {
+      templates {
+        id
+        name
+        type
+        description
+        hasFormFields
+        archivedAt
+        team {
+          id
+          key
+          name
+        }
+      }
+    }
+    """
+    data = post_graphql(token, query)
+    return data.get("templates") or []
+
+
+def template_is_available_for_team(template: Dict[str, Any], team_id: str) -> bool:
+    team = template.get("team")
+    if not team:
+        return True
+    return str(team.get("id") or "").strip() == team_id
+
+
+def template_summary(template: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": template.get("id"),
+        "name": template.get("name"),
+        "type": template.get("type"),
+        "team": template.get("team"),
+        "hasFormFields": template.get("hasFormFields"),
+        "archivedAt": template.get("archivedAt"),
+        "descriptionPreview": truncate_preview(template.get("description")),
+    }
+
+
+def format_template_candidates(templates: List[Dict[str, Any]]) -> str:
+    candidates = []
+    for template in templates:
+        candidates.append(
+            "{name} ({id}, team={team})".format(
+                name=template.get("name") or "<unnamed>",
+                id=template.get("id") or "<missing-id>",
+                team=team_label(template.get("team")),
+            )
+        )
+    return "; ".join(candidates)
+
+
+def filter_templates(
+    templates: List[Dict[str, Any]],
+    team_id: Optional[str],
+    template_type: Optional[str],
+    name: Optional[str],
+    include_archived: bool,
+) -> List[Dict[str, Any]]:
+    type_filter = (template_type or "").strip().lower()
+    name_filter = (name or "").strip().lower()
+    filtered: List[Dict[str, Any]] = []
+
+    for template in templates:
+        if not include_archived and template.get("archivedAt"):
+            continue
+        if type_filter and type_filter != "all":
+            template_type_value = str(template.get("type") or "").strip().lower()
+            if template_type_value != type_filter:
+                continue
+        if name_filter:
+            template_name = str(template.get("name") or "").strip().lower()
+            if template_name != name_filter:
+                continue
+        if team_id and not template_is_available_for_team(template, team_id):
+            continue
+        filtered.append(template)
+
+    return filtered
+
+
+def validate_issue_template_for_team(
+    template: Dict[str, Any],
+    team_id: str,
+    selector: str,
+) -> None:
+    template_type = str(template.get("type") or "").strip()
+    if template_type.lower() != "issue":
+        raise LinearAPIError(
+            f"Template {selector} is type '{template_type}', but create only supports issue templates."
+        )
+
+    if template.get("archivedAt"):
+        raise LinearAPIError(f"Template {selector} is archived and cannot be used for issue creation.")
+
+    if not template_is_available_for_team(template, team_id):
+        raise LinearAPIError(
+            "Template {selector} is scoped to team {template_team} and cannot be used with the target team.".format(
+                selector=selector,
+                template_team=team_label(template.get("team")),
+            )
+        )
+
+
+def resolve_issue_template_by_id(token: str, template_id: str, team_id: str) -> Dict[str, Any]:
+    wanted_id = template_id.strip()
+    if not wanted_id:
+        raise LinearAPIError("Template id must not be empty.")
+
+    for template in list_workspace_templates(token):
+        if str(template.get("id") or "").strip() == wanted_id:
+            validate_issue_template_for_team(template, team_id, wanted_id)
+            return template
+
+    raise LinearAPIError(f"Template not found: {template_id}")
+
+
+def resolve_issue_template_by_name(token: str, template_name: str, team_id: str) -> Dict[str, Any]:
+    wanted_name = template_name.strip()
+    if not wanted_name:
+        raise LinearAPIError("Template name must not be empty.")
+
+    matches = filter_templates(
+        list_workspace_templates(token),
+        team_id=team_id,
+        template_type="issue",
+        name=wanted_name,
+        include_archived=False,
+    )
+
+    if not matches:
+        raise LinearAPIError(f"Template not found by name: {template_name}")
+    if len(matches) > 1:
+        raise LinearAPIError(
+            "Template name matched multiple candidates: "
+            f"{template_name}. Candidates: {format_template_candidates(matches)}"
+        )
+
+    template = matches[0]
+    validate_issue_template_for_team(template, team_id, wanted_name)
+    return template
 
 
 def get_issue_team_id(token: str, issue_id: str) -> str:
@@ -609,14 +770,41 @@ def cmd_get_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
     return {"issue": issue}
 
 
+def cmd_list_templates(token: str, args: argparse.Namespace) -> Dict[str, Any]:
+    team_ref: Optional[Dict[str, Any]] = None
+    team_id: Optional[str] = None
+    if args.team_id or args.team_key:
+        team_ref = resolve_team_ref(token, args.team_id, args.team_key)
+        team_id = str(team_ref.get("id") or "").strip()
+
+    templates = filter_templates(
+        list_workspace_templates(token),
+        team_id=team_id,
+        template_type=args.template_type,
+        name=args.name,
+        include_archived=bool(args.include_archived),
+    )
+
+    result: Dict[str, Any] = {
+        "count": len(templates),
+        "templates": [template_summary(template) for template in templates],
+    }
+    if team_ref:
+        result["team"] = team_ref
+    return result
+
+
 def cmd_create_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
-    team_id = resolve_team_id(token, args.team_id, args.team_key)
+    team_ref = resolve_team_ref(token, args.team_id, args.team_key)
+    team_id = str(team_ref["id"]).strip()
     description = None
     if args.description_file:
         description = load_text_from_args(None, args.description_file, False, "description")
     elif args.description is not None:
         description = args.description
 
+    resolved_template: Optional[Dict[str, Any]] = None
+    warnings: List[str] = []
     issue_input: Dict[str, Any] = {
         "teamId": team_id,
         "title": args.title,
@@ -631,9 +819,28 @@ def cmd_create_issue(token: str, args: argparse.Namespace) -> Dict[str, Any]:
         parent = resolve_issue_ref(token, args.parent)
         issue_input["parentId"] = parent["id"]
 
+    if args.template_id:
+        resolved_template = resolve_issue_template_by_id(token, args.template_id, team_id)
+        issue_input["templateId"] = resolved_template["id"]
+    elif args.template_name:
+        resolved_template = resolve_issue_template_by_name(token, args.template_name, team_id)
+        issue_input["templateId"] = resolved_template["id"]
+    elif args.use_default_template:
+        issue_input["useDefaultTemplate"] = True
+
+    if resolved_template and resolved_template.get("hasFormFields"):
+        warnings.append(
+            "Template has form fields. This CLI version does not fill form fields, so --execute may be rejected by Linear."
+        )
+
     should_execute = bool(getattr(args, "execute", False))
     if not should_execute:
-        return {"dryRun": True, "execute": False, "input": issue_input}
+        result: Dict[str, Any] = {"dryRun": True, "execute": False, "input": issue_input}
+        if resolved_template:
+            result["resolvedTemplate"] = template_summary(resolved_template)
+        if warnings:
+            result["warnings"] = warnings
+        return result
 
     query = """
     mutation CreateIssue($input: IssueCreateInput!) {
@@ -939,7 +1146,7 @@ def cmd_create_comment(token: str, args: argparse.Namespace) -> Dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read/create/update/delete/comment Linear issues via Linear GraphQL API.",
+        description="Read/create/update/delete/comment Linear issues and templates via Linear GraphQL API.",
     )
     parser.add_argument(
         "--token-env",
@@ -957,6 +1164,26 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List latest issues.")
     list_parser.add_argument("--limit", type=int, default=20, help="Number of issues to fetch.")
     list_parser.add_argument("--team-key", help="Optional team key filter (e.g. ENG).")
+
+    templates_parser = subparsers.add_parser("templates", help="List issue templates.")
+    templates_team_group = templates_parser.add_mutually_exclusive_group()
+    templates_team_group.add_argument("--team-id", help="Linear team id (UUID).")
+    templates_team_group.add_argument("--team-key", help="Linear team key (e.g. ENG).")
+    templates_parser.add_argument(
+        "--type",
+        dest="template_type",
+        default="issue",
+        help="Template type filter (default: issue; use 'all' to disable type filtering).",
+    )
+    templates_parser.add_argument(
+        "--name",
+        help="Template name filter (case-insensitive exact match).",
+    )
+    templates_parser.add_argument(
+        "--include-archived",
+        action="store_true",
+        help="Include archived templates.",
+    )
 
     get_parser = subparsers.add_parser("get", help="Get issue details by UUID or identifier.")
     get_parser.add_argument("--id", required=True, help="Issue UUID or identifier (e.g. ABC-123).")
@@ -993,6 +1220,20 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument(
         "--parent",
         help="Parent issue UUID or identifier (e.g. ENG-123) to create a sub-issue.",
+    )
+    template_group = create_parser.add_mutually_exclusive_group()
+    template_group.add_argument(
+        "--template-id",
+        help="Issue template id to apply while creating the issue.",
+    )
+    template_group.add_argument(
+        "--template-name",
+        help="Issue template name to apply (case-insensitive exact match).",
+    )
+    template_group.add_argument(
+        "--use-default-template",
+        action="store_true",
+        help="Use the target team's default issue template, if configured in Linear.",
     )
     create_mode = create_parser.add_mutually_exclusive_group()
     create_mode.add_argument(
@@ -1142,6 +1383,8 @@ def main() -> int:
     try:
         if args.command == "list":
             result = cmd_list_issues(token, args)
+        elif args.command == "templates":
+            result = cmd_list_templates(token, args)
         elif args.command == "get":
             result = cmd_get_issue(token, args)
         elif args.command == "create":

@@ -1,6 +1,6 @@
 ---
 name: linear-manager
-description: Manage Linear tickets/comments via direct HTTP GraphQL with `python3 scripts/linear_manager.py` and token env vars only (no Linear MCP). Supports create/read/update/delete tickets and sub-tickets, workflow status changes, team reassignment, cycle/label updates, and comment read/create/thread reply.
+description: Manage Linear tickets/comments via direct HTTP GraphQL with `python3 scripts/linear_manager.py` and token env vars only (no Linear MCP). Supports create/read/update/delete tickets and sub-tickets, issue templates, workflow status changes, team reassignment, cycle/label updates, and comment read/create/thread reply.
 ---
 
 # Linear Manager
@@ -11,11 +11,13 @@ Execution entrypoint is `python3 scripts/linear_manager.py`.
 
 ## Capability Scope
 - Read:
-`list`, `get`, `states`, `children`, `comments`
+`list`, `get`, `templates`, `states`, `children`, `comments`
 - Write:
 `create`, `update`, `delete`, `comment`
 - Sub-ticket:
 `create --parent <ISSUE_REF>`
+- Template:
+`templates`, `create [--template-id|--template-name|--use-default-template]`
 - Team management:
 `update --team-key <KEY>` or `update --team-id <UUID>`
 - Status management:
@@ -75,6 +77,16 @@ python3 scripts/linear_manager.py --pretty list --limit 20
 ```
 
 ```bash
+python3 scripts/linear_manager.py --pretty templates --team-key ENG
+```
+
+```bash
+python3 scripts/linear_manager.py --pretty templates \
+  --team-key ENG \
+  --name "Issue Templates 2025"
+```
+
+```bash
 python3 scripts/linear_manager.py --pretty get --id ENG-123 --include-children --comments-limit 20
 ```
 
@@ -90,6 +102,28 @@ python3 scripts/linear_manager.py --pretty create \
   --title "Issue title" \
   --description "Issue description" \
   --execute
+```
+
+```bash
+python3 scripts/linear_manager.py --pretty create \
+  --team-key ENG \
+  --title "Issue title" \
+  --template-name "Issue Templates 2025"
+```
+
+```bash
+python3 scripts/linear_manager.py --pretty create \
+  --team-key ENG \
+  --title "Issue title" \
+  --template-id <TEMPLATE_UUID> \
+  --execute
+```
+
+```bash
+python3 scripts/linear_manager.py --pretty create \
+  --team-key ENG \
+  --title "Issue title" \
+  --use-default-template
 ```
 
 ```bash
@@ -190,6 +224,12 @@ missing token env var
 ## Operational Notes
 - Prefer `--pretty` for readable JSON.
 - `--id` and `--parent` accept both UUID and identifier (`TEAM-123`).
+- `templates` is read-only. It lists issue templates by default and can filter by team/name.
+- Template creation is optional. If no template flag is passed to `create`, the command keeps the original custom-content behavior.
+- `create --template-name` uses a case-insensitive exact name match and must resolve to one available issue template.
+- `create --title` is still required, so template title values are always overridden by the CLI title.
+- CLI-provided create fields override matching template fields; fields not provided by the CLI are left for Linear to fill from the template.
+- Form-field templates are not filled by this CLI version. Dry-run warns for explicit `--template-id`/`--template-name` selections when `hasFormFields=true`.
 - `delete --execute` requires `--confirm-delete` to exactly match the resolved issue identifier.
 - `update --team-key|--team-id` moves an issue to another team.
 - Do not combine a cross-team move with `--state`, `--cycle-*`, or label mutation flags; move first, then apply destination-team workflow fields in a second command.

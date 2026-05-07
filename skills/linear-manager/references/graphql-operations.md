@@ -136,7 +136,54 @@ query ResolveIssueByIdentifier($team: String!, $number: Float!) {
 }
 ```
 
-### 4) Create issue / sub-issue
+### 4) List templates
+```graphql
+query ListTemplates {
+  templates {
+    id
+    name
+    type
+    description
+    hasFormFields
+    archivedAt
+    team {
+      id
+      key
+      name
+    }
+  }
+}
+```
+
+CLI behavior:
+- `templates` uses the root workspace template list, then filters locally.
+- By default it shows non-archived issue templates.
+- `--team-key|--team-id` keeps workspace templates and templates scoped to the resolved team.
+- `--name` uses case-insensitive exact matching.
+- Full `templateData` is intentionally not returned by this CLI command.
+
+Single template validation for create uses the same root template list by id or name.
+
+Linear also exposes a single-template lookup:
+```graphql
+query GetTemplate($id: String!) {
+  template(id: $id) {
+    id
+    name
+    type
+    description
+    hasFormFields
+    archivedAt
+    team {
+      id
+      key
+      name
+    }
+  }
+}
+```
+
+### 5) Create issue / sub-issue
 ```graphql
 mutation CreateIssue($input: IssueCreateInput!) {
   issueCreate(input: $input) {
@@ -163,8 +210,16 @@ Input fields used:
 - `description` (optional)
 - `priority` (optional)
 - `assigneeId` (optional)
+- `templateId` (optional; set by `--template-id` or resolved from `--template-name`)
+- `useDefaultTemplate` (optional; set by `--use-default-template`)
 
-### 5) Update issue (status + fields)
+CLI behavior:
+- Template flags are optional; without them, create keeps the original custom-content behavior.
+- `--title` is required by the CLI, so template title values are overridden.
+- CLI-provided `IssueCreateInput` fields override matching template fields.
+- `lastAppliedTemplateId` exists in Linear's schema but is not sent by this CLI.
+
+### 6) Update issue (status + fields)
 ```graphql
 mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) {
@@ -206,7 +261,7 @@ CLI behavior:
 - `update --team-key|--team-id` resolves destination team and sends `teamId`.
 - Cross-team moves are rejected when combined with `state`, `cycle`, or label mutation selectors in the same command.
 
-### 6) Delete issue
+### 7) Delete issue
 ```graphql
 mutation DeleteIssue($id: String!) {
   issueDelete(id: $id) {
@@ -232,7 +287,7 @@ CLI behavior:
 - The confirmation requirement is enforced in the CLI before the GraphQL mutation is sent.
 - Linear's payload type is `IssueArchivePayload`; the CLI aliases `entity` to `issue` to keep response shape consistent with other commands.
 
-### 7) List team states
+### 8) List team states
 ```graphql
 query TeamStates($id: String!) {
   team(id: $id) {
@@ -250,7 +305,7 @@ query TeamStates($id: String!) {
 }
 ```
 
-### 8) List child issues
+### 9) List child issues
 ```graphql
 query GetIssueChildren($id: String!, $first: Int!) {
   issue(id: $id) {
@@ -277,7 +332,7 @@ query GetIssueChildren($id: String!, $first: Int!) {
 }
 ```
 
-### 9) List comments
+### 10) List comments
 ```graphql
 query GetIssueComments($id: String!, $first: Int!) {
   issue(id: $id) {
@@ -301,7 +356,7 @@ query GetIssueComments($id: String!, $first: Int!) {
 }
 ```
 
-### 10) Create comment
+### 11) Create comment
 ```graphql
 mutation CreateComment($input: CommentCreateInput!) {
   commentCreate(input: $input) {
